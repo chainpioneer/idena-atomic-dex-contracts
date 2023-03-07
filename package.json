@@ -25,6 +25,8 @@
   },
   "dependencies": {
     "idena-assemblyscript-json": "^0.0.2",
-    "idena-sdk-as": "0.0.28"
+    "idena-sdk-as": "0.0.28",
+    "idena-sdk-tests": "^0.0.29",
+    "keccak256": "^1.0.6"
   }
 }

@@ -19,9 +19,9 @@ const nullOrder = new SwapOrder(
 export class AtomicDex {
   owner: Address
   minAmount: Balance
-  orderTTL: i64
-  timeToFulfill: i64
-  timeGapAfterFulfillment: i64
+  minOrderTTLInBlocks: u64
+  fulfillPeriodInBlocks: u64
+  gapAfterFulfillment: u64
   orders: PersistentMap<Bytes, SwapOrder>
   securityDeposits: PersistentMap<Address, Balance>
   protocolFund: Address
@@ -31,34 +31,41 @@ export class AtomicDex {
   constructor(
       requiredSecurityDepositAmount: Balance,
       minAmount: Balance,
-      minTimeout: i64,
-      timeToFulfill: i64,
-      minTimeAfterFulfillment: i64,
-      fee: u32,
+      minOrderTTLInBlocks: u64,
+      fulfillPeriodInBlocks: u64,
+      minBlocksAfterFulfillment: u64,
       protocolFund: Address,
   ) {
+    this.orders = PersistentMap.withStringPrefix<Bytes, SwapOrder>("o:")
+    this.securityDeposits = PersistentMap.withStringPrefix<Address, Balance>("d:")
+    this.securityDepositInUse = PersistentMap.withStringPrefix<Address, bool>("u:")
     this.requiredSecurityDepositAmount = requiredSecurityDepositAmount
     this.minAmount = minAmount
-    this.orderTTL = minTimeout
-    this.timeToFulfill = timeToFulfill
-    this.timeGapAfterFulfillment = minTimeAfterFulfillment
+    this.minOrderTTLInBlocks = minOrderTTLInBlocks
+    this.fulfillPeriodInBlocks = fulfillPeriodInBlocks
+    this.gapAfterFulfillment = minBlocksAfterFulfillment
     this.protocolFund = protocolFund
     this.owner = Context.caller()
   }
 
-  createOrder(amountXDAI: Balance, timeout: i64, secretHash: Bytes, payoutAddress: Address): void {
+  createOrder(amountXDAI: Balance, expirationBlock: u64, payoutAddress: Address, secretHash: Bytes): void {
+
+    // VALIDATION CHECKS
+
     assert(Balance.gt(amountXDAI, Balance.Zero), "amountOut should be > 0")
-    assert(timeout >= this.orderTTL, "timeout should be >= minTimeout")
+    assert(expirationBlock >= Context.blockNumber() + this.minOrderTTLInBlocks, "expiration should be >= minOrderTTLInBlocks")
     assert(payoutAddress != new Address(0), "incorrect payout address")
 
     assert(this.orders.get(secretHash, nullOrder).owner == new Address(0), "order already exists")
 
     const sender = Context.caller()
-    const amount = Context.payAmount()
+    const amountDNA = Context.payAmount()
 
-    assert(Balance.ge(amount, this.minAmount), "amountIn should be >= minAmount")
+    assert(Balance.ge(amountDNA, this.minAmount), "amount should be >= minAmount")
 
-    const order = new SwapOrder(sender, payoutAddress, amount, amountXDAI, Context.blockTimestamp() + timeout)
+    const order = new SwapOrder(sender, payoutAddress, amountDNA, amountXDAI, expirationBlock)
+
+    // STATE CHANGE
 
     this.orders.set(secretHash, order);
 
@@ -77,7 +84,7 @@ export class AtomicDex {
     assert(!this.securityDepositInUse.get(matcher, false), "cannot match: security deposit already in use")
 
     if (order.matcher != new Address(0)) { // order matched
-      if (Context.blockTimestamp() > order.matchExpiration) { // order expired
+      if (Context.blockNumber() > order.matchExpirationBlock) { // order expired
         // penalize an old matcher for allowing the expiration
         // in case the owner failed - the matcher will be able to claim owner's deposit on GC
         const fine = this.securityDeposits.get(matcher, Balance.Zero)
@@ -89,24 +96,28 @@ export class AtomicDex {
       }
     }
 
-    const matchExpiration = Context.blockTimestamp() + this.timeToFulfill
-    assert(order.expiration >= (matchExpiration + this.timeGapAfterFulfillment) , "order expired")
+    const matchExpirationBlock = Context.blockNumber() + this.fulfillPeriodInBlocks
+    assert(order.expirationBlock >= (matchExpirationBlock + this.gapAfterFulfillment) , "order expired")
 
     // STATE CHANGES
 
     this.securityDepositInUse.set(matcher, true)
     order.matcher = matcher
-    order.matchExpiration = matchExpiration
+    order.matchExpirationBlock = matchExpirationBlock
     this.orders.set(secretHash, order);
 
     Host.emitEvent("Order matched", [secretHash])
   }
 
-  cancelOrder(secretHash: Bytes): void {
-    const order = this.orders.get(secretHash, nullOrder)
+  burnOrder(secretHash: Bytes): void {
 
-    assert(order.expiration != 0, "cannot cancel: order doesn't exist")
-    assert(Context.blockTimestamp() >= order.expiration, "cannot cancel: not yet expired")
+    // VALIDATION CHECKS
+
+    const order = this.orders.get(secretHash, nullOrder)
+    assert(order.expirationBlock != 0, "cannot cancel: order doesn't exist")
+    assert(Context.blockNumber() >= order.expirationBlock, "cannot cancel: not yet expired")
+
+    // STATE CHANGES
 
     if (order.matcher != new Address(0)) { // order matched
       // penalize a matcher for allowing the expiration
@@ -120,20 +131,24 @@ export class AtomicDex {
     const amountDNA = order.amountDNA
     this.orders.delete(secretHash)
 
-
     Host.createTransferPromise(owner, amountDNA)
 
     Host.emitEvent("Order cancelled", [secretHash])
   }
 
   finalizeOrder(secret: Uint8Array): void {
-    const secretHash = Host.keccac256(secret)
+
+    // VALIDATION CHECKS
+
+    const secretHash = Host.keccac256(secret) // keccak?
     const order = this.orders.get(secretHash, nullOrder)
-    assert(order.expiration > Context.blockTimestamp(), "cannot finalize: order expired or doesn't exist")
+    assert(order.expirationBlock > Context.blockNumber(), "cannot finalize: order expired or doesn't exist")
 
 
     const matcher = order.matcher
     const amountDNA = order.amountDNA
+
+    // STATE CHANGES
 
     this.orders.delete(secretHash)
     this.securityDepositInUse.delete(matcher)
@@ -144,10 +159,15 @@ export class AtomicDex {
   }
 
   withdrawSecurityDeposit(): void {
+
+    // VALIDATION CHECKS
+
     assert(!this.securityDepositInUse.get(Context.caller(), false), "cannot withdraw: fulfillment in progress")
 
     const securityDeposit = this.securityDeposits.get(Context.caller(), Balance.Zero)
     assert(securityDeposit == this.requiredSecurityDepositAmount, "cannot withdraw: deposit not found")
+
+    // STATE CHANGES
 
     this.securityDeposits.delete(Context.caller())
 
@@ -157,11 +177,16 @@ export class AtomicDex {
   }
 
   submitSecurityDeposit(): void {
+
+    // VALIDATION CHECKS
+
     assert(
         this.securityDeposits.get(Context.caller(), Balance.Zero) == Balance.Zero,
         "cannot submit: deposit already submitted"
     )
     assert(Context.payAmount() == this.requiredSecurityDepositAmount, "cannot submit: incorrect amount")
+
+    // STATE CHANGES
 
     this.securityDeposits.set(Context.caller(), Context.payAmount())
 
