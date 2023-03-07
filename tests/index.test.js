@@ -216,7 +216,7 @@ it("can deploy and create, match, and finalize order", async () => {
   expect(withdrawSecurityDepositTxReceipt.events[0].event).toBe('Security deposit withdrawn')
   expect(withdrawSecurityDepositTxReceipt.events[0].args[0]).toBe(god)
 
-  await ensureMapValueIsNil(provider, contract, "isDepositInUse", secretHash)
+  await ensureMapValueIsNil(provider, contract, "isDepositInUse", god)
 
   expect(await provider.Chain.balance(depositTxReceipt.events[0].contract)).toBe('0')
 })
