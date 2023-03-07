@@ -6,15 +6,6 @@ import {
   Host,
   PersistentMap,
 } from "idena-sdk-as"
-import { SwapOrder } from "./types"
-
-const nullOrder = new SwapOrder(
-  new Address(0),
-  new Address(0),
-  Balance.Zero,
-  Balance.Zero,
-  0,
-)
 
 export class AtomicDex {
   owner: Address
@@ -22,11 +13,20 @@ export class AtomicDex {
   minOrderTTLInBlocks: u64
   fulfillPeriodInBlocks: u64
   gapAfterFulfillment: u64
-  orders: PersistentMap<Bytes, SwapOrder>
+
   securityDeposits: PersistentMap<Address, Balance>
   protocolFund: Address
   requiredSecurityDepositAmount: Balance
   securityDepositInUse: PersistentMap<Address, bool>
+  payoutAddresses: PersistentMap<Bytes, Address>
+
+  // order fields
+  orderOwners: PersistentMap<Bytes, Address>
+  amountsDNA: PersistentMap<Bytes, Balance>
+  amountsXDAI: PersistentMap<Bytes, Balance>
+  expirationBlocks: PersistentMap<Bytes, u64>
+  matchers: PersistentMap<Bytes, Address>
+  matchExpirationBlocks: PersistentMap<Bytes, u64>
 
   constructor(
       requiredSecurityDepositAmount: Balance,
@@ -36,9 +36,17 @@ export class AtomicDex {
       minBlocksAfterFulfillment: u64,
       protocolFund: Address,
   ) {
-    this.orders = PersistentMap.withStringPrefix<Bytes, SwapOrder>("o:")
-    this.securityDeposits = PersistentMap.withStringPrefix<Address, Balance>("d:")
-    this.securityDepositInUse = PersistentMap.withStringPrefix<Address, bool>("u:")
+
+    this.orderOwners = PersistentMap.withStringPrefix<Bytes, Address>("getOwner")
+    this.matchers = PersistentMap.withStringPrefix<Bytes, Address>("getMatcher")
+    this.payoutAddresses = PersistentMap.withStringPrefix<Bytes, Address>("getPayoutAddresses")
+    this.amountsDNA = PersistentMap.withStringPrefix<Bytes, Balance>("getAmountDNA")
+    this.amountsXDAI = PersistentMap.withStringPrefix<Bytes, Balance>("getAmountXDAI")
+    this.expirationBlocks = PersistentMap.withStringPrefix<Bytes, u64>("getExpirationBlock")
+    this.matchExpirationBlocks = PersistentMap.withStringPrefix<Bytes, u64>("getMatchExpirationBlock")
+
+    this.securityDeposits = PersistentMap.withStringPrefix<Address, Balance>("getDeposit")
+    this.securityDepositInUse = PersistentMap.withStringPrefix<Address, bool>("isDepositInUse")
     this.requiredSecurityDepositAmount = requiredSecurityDepositAmount
     this.minAmount = minAmount
     this.minOrderTTLInBlocks = minOrderTTLInBlocks
@@ -52,22 +60,24 @@ export class AtomicDex {
 
     // VALIDATION CHECKS
 
-    assert(Balance.gt(amountXDAI, Balance.Zero), "amountOut should be > 0")
-    assert(expirationBlock >= Context.blockNumber() + this.minOrderTTLInBlocks, "expiration should be >= minOrderTTLInBlocks")
-    assert(payoutAddress != new Address(0), "incorrect payout address")
+    assert(Balance.gt(amountXDAI, Balance.Zero), "cannot create: amountOut should be > 0")
+    assert(expirationBlock >= Context.blockNumber() + this.minOrderTTLInBlocks, "cannot create: expiration should be >= minOrderTTLInBlocks")
+    assert(payoutAddress != new Address(0), "cannot create: incorrect payout address")
 
-    assert(this.orders.get(secretHash, nullOrder).owner == new Address(0), "order already exists")
+    assert(this.orderOwners.get(secretHash, new Address(0)) == new Address(0), "order already exists")
 
     const sender = Context.caller()
     const amountDNA = Context.payAmount()
 
-    assert(Balance.ge(amountDNA, this.minAmount), "amount should be >= minAmount")
+    assert(Balance.ge(amountDNA, this.minAmount), "cannot create: amount should be >= minAmount")
 
-    const order = new SwapOrder(sender, payoutAddress, amountDNA, amountXDAI, expirationBlock)
+    // STATE CHANGES
 
-    // STATE CHANGE
-
-    this.orders.set(secretHash, order);
+    this.orderOwners.set(secretHash, sender)
+    this.payoutAddresses.set(secretHash, payoutAddress)
+    this.amountsDNA.set(secretHash, amountDNA)
+    this.amountsXDAI.set(secretHash, amountXDAI)
+    this.expirationBlocks.set(secretHash, expirationBlock)
 
     Host.emitEvent("Order created", [secretHash])
   }
@@ -76,20 +86,21 @@ export class AtomicDex {
 
     // VALIDATION CHECKS
 
-    const order = this.orders.get(secretHash, nullOrder)
-    assert(order.owner != new Address(0), "cannot match: order doesn't exist")
+    const owner = this.orderOwners.get(secretHash, new Address(0))
+    assert(owner != new Address(0), "cannot match: order doesn't exist")
 
-    const matcher = Context.caller()
-    assert(this.securityDeposits.get(matcher, Balance.Zero) == this.requiredSecurityDepositAmount, "cannot match: not enough security deposit")
-    assert(!this.securityDepositInUse.get(matcher, false), "cannot match: security deposit already in use")
+    const newMatcher = Context.caller()
+    assert(this.securityDeposits.get(newMatcher, Balance.Zero) == this.requiredSecurityDepositAmount, "cannot match: not enough security deposit")
+    assert(!this.securityDepositInUse.get(newMatcher, false), "cannot match: security deposit already in use")
 
-    if (order.matcher != new Address(0)) { // order matched
-      if (Context.blockNumber() > order.matchExpirationBlock) { // order expired
+    const oldMatcher = this.matchers.get(secretHash, new Address(0))
+    if (oldMatcher != new Address(0)) { // order matched
+      if (Context.blockNumber() > this.matchExpirationBlocks.get(secretHash, 0)) { // order expired
         // penalize an old matcher for allowing the expiration
         // in case the owner failed - the matcher will be able to claim owner's deposit on GC
-        const fine = this.securityDeposits.get(matcher, Balance.Zero)
-        this.securityDeposits.delete(matcher)
-        this.securityDepositInUse.delete(matcher)
+        const fine = this.securityDeposits.get(oldMatcher, Balance.Zero)
+        this.securityDeposits.delete(oldMatcher)
+        this.securityDepositInUse.delete(oldMatcher)
         Host.createTransferPromise(this.protocolFund, fine)
       } else {
         assert(false, "cannot match: fulfillment in progress");
@@ -97,14 +108,14 @@ export class AtomicDex {
     }
 
     const matchExpirationBlock = Context.blockNumber() + this.fulfillPeriodInBlocks
-    assert(order.expirationBlock >= (matchExpirationBlock + this.gapAfterFulfillment) , "order expired")
+    assert(this.expirationBlocks.get(secretHash, 0) >= (matchExpirationBlock + this.gapAfterFulfillment) , "order expired")
 
     // STATE CHANGES
 
-    this.securityDepositInUse.set(matcher, true)
-    order.matcher = matcher
-    order.matchExpirationBlock = matchExpirationBlock
-    this.orders.set(secretHash, order);
+    this.securityDepositInUse.set(newMatcher, true)
+
+    this.matchers.set(secretHash, newMatcher)
+    this.matchExpirationBlocks.set(secretHash, matchExpirationBlock)
 
     Host.emitEvent("Order matched", [secretHash])
   }
@@ -113,49 +124,82 @@ export class AtomicDex {
 
     // VALIDATION CHECKS
 
-    const order = this.orders.get(secretHash, nullOrder)
-    assert(order.expirationBlock != 0, "cannot cancel: order doesn't exist")
-    assert(Context.blockNumber() >= order.expirationBlock, "cannot cancel: not yet expired")
+    const expirationBlock = this.expirationBlocks.get(secretHash, 0)
+    assert(expirationBlock != 0, "cannot cancel: order doesn't exist")
+    assert(Context.blockNumber() >= expirationBlock, "cannot cancel: not yet expired")
 
     // STATE CHANGES
 
-    if (order.matcher != new Address(0)) { // order matched
+    const matcher = this.matchers.get(secretHash, new Address(0))
+    if (matcher != new Address(0)) { // order matched
       // penalize a matcher for allowing the expiration
-      const securityDeposit = this.securityDeposits.get(order.matcher, Balance.Zero)
-      this.securityDeposits.delete(order.matcher)
-      this.securityDepositInUse.delete(order.matcher)
+      const securityDeposit = this.securityDeposits.get(matcher, Balance.Zero)
+      this.securityDeposits.delete(matcher)
+      this.securityDepositInUse.delete(matcher)
       Host.createTransferPromise(this.protocolFund, securityDeposit)
+
+      this.matchers.delete(secretHash)
+      this.matchExpirationBlocks.delete(secretHash)
     }
 
-    const owner = order.owner
-    const amountDNA = order.amountDNA
-    this.orders.delete(secretHash)
+    const owner = this.orderOwners.get(secretHash, new Address(0))
+    const amountDNA = this.amountsDNA.get(secretHash, Balance.Zero)
+
+    this.orderOwners.delete(secretHash)
+    this.amountsDNA.delete(secretHash)
+    this.amountsXDAI.delete(secretHash)
+    this.expirationBlocks.delete(secretHash)
 
     Host.createTransferPromise(owner, amountDNA)
 
     Host.emitEvent("Order cancelled", [secretHash])
   }
 
-  finalizeOrder(secret: Uint8Array): void {
+  completeOrder(secret: Uint8Array): void {
 
     // VALIDATION CHECKS
 
     const secretHash = Host.keccac256(secret) // keccak?
-    const order = this.orders.get(secretHash, nullOrder)
-    assert(order.expirationBlock > Context.blockNumber(), "cannot finalize: order expired or doesn't exist")
+    const expirationBlock = this.expirationBlocks.get(secretHash, 0)
+    assert(expirationBlock > Context.blockNumber(), "cannot complete: order expired or doesn't exist or not yet expired")
 
+    const matcher = this.matchers.get(secretHash, new Address(0))
+    assert(matcher != new Address(0), "cannot complete: not matched")
 
-    const matcher = order.matcher
-    const amountDNA = order.amountDNA
+    const amountDNA = this.amountsDNA.get(secretHash, Balance.Zero)
 
     // STATE CHANGES
 
-    this.orders.delete(secretHash)
+    this.orderOwners.delete(secretHash)
+    this.amountsDNA.delete(secretHash)
+    this.amountsXDAI.delete(secretHash)
+    this.expirationBlocks.delete(secretHash)
+
+    this.matchers.delete(secretHash)
+    this.matchExpirationBlocks.delete(secretHash)
+
     this.securityDepositInUse.delete(matcher)
 
     Host.createTransferPromise(matcher, amountDNA)
 
-    Host.emitEvent("Order finalized", [secretHash])
+    Host.emitEvent("Order completed", [secretHash])
+  }
+
+  submitSecurityDeposit(): void {
+
+    // VALIDATION CHECKS
+
+    assert(
+        this.securityDeposits.get(Context.caller(), Balance.Zero) == Balance.Zero,
+        "cannot submit: deposit already submitted"
+    )
+    assert(Context.payAmount() == this.requiredSecurityDepositAmount, "cannot submit: incorrect amount")
+
+    // STATE CHANGES
+
+    this.securityDeposits.set(Context.caller(), Context.payAmount())
+
+    Host.emitEvent("Security deposit submitted", [Context.caller()])
   }
 
   withdrawSecurityDeposit(): void {
@@ -174,22 +218,5 @@ export class AtomicDex {
     Host.createTransferPromise(Context.caller(), securityDeposit)
 
     Host.emitEvent("Security deposit withdrawn", [Context.caller()])
-  }
-
-  submitSecurityDeposit(): void {
-
-    // VALIDATION CHECKS
-
-    assert(
-        this.securityDeposits.get(Context.caller(), Balance.Zero) == Balance.Zero,
-        "cannot submit: deposit already submitted"
-    )
-    assert(Context.payAmount() == this.requiredSecurityDepositAmount, "cannot submit: incorrect amount")
-
-    // STATE CHANGES
-
-    this.securityDeposits.set(Context.caller(), Context.payAmount())
-
-    Host.emitEvent("Security deposit submitted", [Context.caller()])
   }
 }
