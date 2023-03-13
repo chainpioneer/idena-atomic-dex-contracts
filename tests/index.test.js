@@ -169,6 +169,11 @@ it("can deploy and create, match, and finalize order", async () => {
   // expect(await provider.Contract.readMap(contract, "isDepositInUse", god, "bool")).toBe(true)
   expect(await provider.Contract.readMap(contract, "getMatchExpirationBlock", secretHash, "uint64")).toBe(blocksPerHour + 6)
 
+  /// GNOSIS interactions
+  // `matchOrder` (secretHash, amountXDAI, owner payoutAddress)
+
+  // owner - side
+  // `completeOrder(secret)`
 
   // Complete order
 
@@ -191,6 +196,7 @@ it("can deploy and create, match, and finalize order", async () => {
 
   await ensureMapValueIsNil(provider, contract, "getMatcher", secretHash)
   await ensureMapValueIsNil(provider, contract, "getOwner", secretHash)
+  await ensureMapValueIsNil(provider, contract, "getPayoutAddresses", secretHash)
   await ensureMapValueIsNil(provider, contract, "getPayoutAddress", secretHash)
   await ensureMapValueIsNil(provider, contract, "getAmountDNA", secretHash)
   await ensureMapValueIsNil(provider, contract, "getAmountXDAI", secretHash)
@@ -212,6 +218,7 @@ it("can deploy and create, match, and finalize order", async () => {
   )
 
   await provider.Chain.generateBlocks(1)
+
   const withdrawSecurityDepositTxReceipt = await provider.Chain.receipt(withdrawSecurityDepositTx)
   expect(withdrawSecurityDepositTxReceipt.events[0].event).toBe('Security deposit withdrawn')
   expect(withdrawSecurityDepositTxReceipt.events[0].args[0]).toBe(god)

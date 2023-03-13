@@ -14,10 +14,12 @@ export class AtomicDex {
   fulfillPeriodInBlocks: u64
   gapAfterFulfillment: u64
 
+  // security deposit data
   securityDeposits: PersistentMap<Address, Balance>
+  securityDepositInUse: PersistentMap<Address, bool>
+
   protocolFund: Address
   requiredSecurityDepositAmount: Balance
-  securityDepositInUse: PersistentMap<Address, bool>
   payoutAddresses: PersistentMap<Bytes, Address>
 
   // order fields
@@ -37,16 +39,21 @@ export class AtomicDex {
       protocolFund: Address,
   ) {
 
+    // order data
     this.orderOwners = PersistentMap.withStringPrefix<Bytes, Address>("getOwner")
-    this.matchers = PersistentMap.withStringPrefix<Bytes, Address>("getMatcher")
     this.payoutAddresses = PersistentMap.withStringPrefix<Bytes, Address>("getPayoutAddresses")
     this.amountsDNA = PersistentMap.withStringPrefix<Bytes, Balance>("getAmountDNA")
     this.amountsXDAI = PersistentMap.withStringPrefix<Bytes, Balance>("getAmountXDAI")
     this.expirationBlocks = PersistentMap.withStringPrefix<Bytes, u64>("getExpirationBlock")
+    this.matchers = PersistentMap.withStringPrefix<Bytes, Address>("getMatcher")
     this.matchExpirationBlocks = PersistentMap.withStringPrefix<Bytes, u64>("getMatchExpirationBlock")
 
+    // security deposits
     this.securityDeposits = PersistentMap.withStringPrefix<Address, Balance>("getDeposit")
     this.securityDepositInUse = PersistentMap.withStringPrefix<Address, bool>("isDepositInUse")
+
+
+    // system parameters
     this.requiredSecurityDepositAmount = requiredSecurityDepositAmount
     this.minAmount = minAmount
     this.minOrderTTLInBlocks = minOrderTTLInBlocks
@@ -98,10 +105,10 @@ export class AtomicDex {
       if (Context.blockNumber() > this.matchExpirationBlocks.get(secretHash, 0)) { // order expired
         // penalize an old matcher for allowing the expiration
         // in case the owner failed - the matcher will be able to claim owner's deposit on GC
-        const fine = this.securityDeposits.get(oldMatcher, Balance.Zero)
+        const fineAmount = this.securityDeposits.get(oldMatcher, Balance.Zero)
         this.securityDeposits.delete(oldMatcher)
         this.securityDepositInUse.delete(oldMatcher)
-        Host.createTransferPromise(this.protocolFund, fine)
+        Host.createTransferPromise(this.protocolFund, fineAmount)
       } else {
         assert(false, "cannot match: fulfillment in progress");
       }
@@ -146,6 +153,7 @@ export class AtomicDex {
     const amountDNA = this.amountsDNA.get(secretHash, Balance.Zero)
 
     this.orderOwners.delete(secretHash)
+    this.payoutAddresses.delete(secretHash)
     this.amountsDNA.delete(secretHash)
     this.amountsXDAI.delete(secretHash)
     this.expirationBlocks.delete(secretHash)
@@ -173,6 +181,7 @@ export class AtomicDex {
     this.orderOwners.delete(secretHash)
     this.amountsDNA.delete(secretHash)
     this.amountsXDAI.delete(secretHash)
+    this.payoutAddresses.delete(secretHash)
     this.expirationBlocks.delete(secretHash)
 
     this.matchers.delete(secretHash)
@@ -209,7 +218,7 @@ export class AtomicDex {
     assert(!this.securityDepositInUse.get(Context.caller(), false), "cannot withdraw: fulfillment in progress")
 
     const securityDeposit = this.securityDeposits.get(Context.caller(), Balance.Zero)
-    assert(securityDeposit == this.requiredSecurityDepositAmount, "cannot withdraw: deposit not found")
+    assert(Balance.gt(securityDeposit, Balance.Zero), "cannot withdraw: deposit not found")
 
     // STATE CHANGES
 
