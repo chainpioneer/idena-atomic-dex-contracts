@@ -21,3 +21,7 @@ Execute tests
 ```sh
 yarn test
 ```
+
+## Deployment info
+
+Idena contract address `0x473c7B9384EFcd17a929a76E10bF9c3284112347`

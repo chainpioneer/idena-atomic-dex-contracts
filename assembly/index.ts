@@ -14,15 +14,16 @@ export class AtomicDex {
   fulfillPeriodInBlocks: u64
   gapAfterFulfillment: u64
 
+  requiredSecurityDepositAmount: Balance
+
+  protocolFund: Address
+
   // security deposit data
   securityDeposits: PersistentMap<Address, Balance>
   securityDepositInUse: PersistentMap<Address, bool>
 
-  protocolFund: Address
-  requiredSecurityDepositAmount: Balance
-  payoutAddresses: PersistentMap<Bytes, Address>
-
   // order fields
+  payoutAddresses: PersistentMap<Bytes, Address>
   orderOwners: PersistentMap<Bytes, Address>
   amountsDNA: PersistentMap<Bytes, Balance>
   amountsXDAI: PersistentMap<Bytes, Balance>
