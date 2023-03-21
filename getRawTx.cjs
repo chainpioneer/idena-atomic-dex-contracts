@@ -9,7 +9,7 @@ async function getRawTx(
     payload,
     tips,
 ) {
-    const {data} = await axios.post('http://localhost:9009', {
+    const {data} = await axios.post('https://restricted.idena.io', {
         method: 'bcn_getRawTx',
         params: [
             strip({
@@ -24,7 +24,7 @@ async function getRawTx(
             }),
         ],
         id: 1,
-        key:"eb3453be213538698ec6db90432fdefd",
+        key: "idena-restricted-node-key",
     })
     const {result, error} = data
     if (error) throw new Error(error.message)

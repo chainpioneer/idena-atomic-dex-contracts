@@ -3,8 +3,8 @@ const { ContractRunnerProvider } = require("idena-sdk-tests")
 const {randomBytes} = require("crypto");
 const keccak256 = require("keccak256");
 
-const bcnProvider = BcnProvider.create("http://localhost:9009", "eb3453be213538698ec6db90432fdefd")
-const dnaProvider = DnaProvider.create("http://localhost:9009", "eb3453be213538698ec6db90432fdefd")
+const bcnProvider = BcnProvider.create("https://restricted.idena.io", "idena-restricted-node-key")
+const dnaProvider = DnaProvider.create("https://restricted.idena.io", "idena-restricted-node-key")
 const contractRunnerProvider = ContractRunnerProvider.create("http://localhost:9009", "eb3453be213538698ec6db90432fdefd")
 const contractAddress = '0xdfa64FC435298E3C45bd81491055a597B4CaC98E'
 
