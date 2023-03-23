@@ -2,11 +2,12 @@ const { ContractArgumentFormat, DnaProvider, BcnProvider, ContractProvider } = r
 const { ContractRunnerProvider } = require("idena-sdk-tests")
 const {randomBytes} = require("crypto");
 const keccak256 = require("keccak256");
+const BN = require("bn.js");
 
 const bcnProvider = BcnProvider.create("https://restricted.idena.io", "idena-restricted-node-key")
 const dnaProvider = DnaProvider.create("https://restricted.idena.io", "idena-restricted-node-key")
 const contractRunnerProvider = ContractRunnerProvider.create("http://localhost:9009", "eb3453be213538698ec6db90432fdefd")
-const contractAddress = '0xdfa64FC435298E3C45bd81491055a597B4CaC98E'
+const contractAddress = '0xE23369534EfBfbc1E51f028DAe5f412CCCe1ccA9'
 
 it("test calls", async () => {
     const payoutAddress = "0x473c7B9384EFcd17a929a76E10bF9c3284112347"
@@ -51,7 +52,9 @@ it("test calls", async () => {
 
     console.log(createOrderTx)
 
-    await getBalance('0x0000000000000000000000000000000000000000')
+    console.log(await getBalance('0x0000000000000000000000000000000000000000'))
+
+    console.log(await getActiveOrders())
 
     console.log(await getOrderState(secretHash))
 
@@ -129,4 +132,27 @@ async function tryReadMap(contractAddress, method, key, type) {
     } catch (e) {
         return null
     }
+}
+
+async function readMap(contract, map, key) {
+    try {
+        return await contractRunnerProvider.Contract.readMap(contract, map, key, "hex")
+    } catch (e) {
+        return null
+    }
+}
+
+async function getActiveOrders() {
+    const results = []
+    let i = 0
+    let current
+    while (current = await readMap(contractAddress, "activeOrders", numToHex(i++))) {
+        results.push(current)
+    }
+    return results
+}
+
+function numToHex(num) {
+    const arr = new BN(num).toArray('le')
+    return `0x${Buffer.from([...arr, ...new Array(4).fill(0)].slice(0, 4)).toString('hex')}`
 }

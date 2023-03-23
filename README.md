@@ -30,4 +30,4 @@ node contractCallEncodeExamples.cjs
 
 ## Deployment info
 
-Idena contract address `0x473c7B9384EFcd17a929a76E10bF9c3284112347`
+Idena contract address `0xE23369534EfBfbc1E51f028DAe5f412CCCe1ccA9`

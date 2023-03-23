@@ -15,7 +15,6 @@ async function deployContract(resetChain = true) {
   const minAmount = '100.0'
   const minTimeout = (blocksPerHour * 3).toString()
   const timeToFulfill = (blocksPerHour).toString()
-  const minTimeAfterFulfillment = (blocksPerHour / 2).toString()
   const protocolFund = "0x5E1CF775EC18167722589520b385AfdbF8a4AA5F"
 
   let i = 0
@@ -37,16 +36,12 @@ async function deployContract(resetChain = true) {
     value: timeToFulfill,
   }, {
     index: i++,
-    format: ContractArgumentFormat.Uint64,
-    value: minTimeAfterFulfillment,
-  }, {
-    index: i++,
     format: ContractArgumentFormat.Hex,
     value: protocolFund,
   }])
 
-  const deployReceipt = await provider.Chain.receipt(deployTx)
-  console.log(deployReceipt)
+  // const deployReceipt = await provider.Chain.receipt(deployTx)
+  // console.log(deployReceipt)
 }
 
 it("can deploy and create, match, and finalize order", async () => {

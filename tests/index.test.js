@@ -4,6 +4,7 @@ const { randomBytes } = require('crypto')
 const keccak256 = require('keccak256')
 const { ContractArgumentFormat } = require("idena-sdk-js")
 const { ContractRunnerProvider } = require("idena-sdk-tests")
+const BN = require("bn.js");
 
 const requiredSecurityDepositAmount = '10.0'
 const blocksPerHour = 3600 / 20
@@ -22,7 +23,6 @@ async function deployContract(resetChain = true) {
   const minAmount = '100.0'
   const minTimeout = (blocksPerHour * 3).toString()
   const timeToFulfill = (blocksPerHour).toString()
-  const minTimeAfterFulfillment = (blocksPerHour / 2).toString()
   const protocolFund = "0x0000000000000000000000000000000000000001"
 
   let i = 0
@@ -44,10 +44,6 @@ async function deployContract(resetChain = true) {
     value: timeToFulfill,
   }, {
     index: i++,
-    format: ContractArgumentFormat.Uint64,
-    value: minTimeAfterFulfillment,
-  }, {
-    index: i++,
     format: ContractArgumentFormat.Hex,
     value: protocolFund,
   }])
@@ -57,6 +53,29 @@ async function deployContract(resetChain = true) {
   const deployReceipt = await provider.Chain.receipt(deployTx)
   expect(deployReceipt.success).toBe(true)
   return { provider: provider, contract: deployReceipt.contract }
+}
+
+async function readMap(provider, contract, map, key) {
+  try {
+    return await provider.Contract.readMap(contract, map, key, "hex")
+  } catch (e) {
+    return null
+  }
+}
+
+async function getActiveOrders(provider, contract, map) {
+  const results = []
+  let i = 0
+  let current
+  while (current = await readMap(provider, contract, map, numToHex(i++))) {
+    results.push(current)
+  }
+  return results
+}
+
+function numToHex(num) {
+  const arr = new BN(num).toArray('le')
+  return `0x${Buffer.from([...arr, ...new Array(4).fill(0)].slice(0, 4)).toString('hex')}`
 }
 
 async function ensureMapValueIsNil(provider, contract, map, key) {
@@ -78,6 +97,8 @@ it("can deploy and create, match, and finalize order", async () => {
 
   const secret = randomBytes(512)
   const secretHash = `0x${keccak256(secret).toString('hex')}`
+
+  expect((await getActiveOrders(provider, contract, "activeOrders")).length).toBe(0)
 
   const createOrderTx = await provider.Contract.call(
     contract,
@@ -109,6 +130,13 @@ it("can deploy and create, match, and finalize order", async () => {
 
   expect(createOrderReceipt.events[0].event).toBe('Order created')
   expect(createOrderReceipt.events[0].args[0]).toBe(secretHash)
+
+  const orderIndex = await readMap(provider, contract, "getOrderIndex", secretHash)
+  expect(orderIndex).toBe(numToHex(0))
+
+  const orders = await getActiveOrders(provider, contract, "activeOrders")
+  expect(orders.length).toBe(1)
+  expect(orders[0]).toBe(secretHash)
 
   const god = await provider.Chain.godAddress()
   expect(await provider.Contract.readMap(contract, "getOwner", secretHash, "hex")).toBe(god)
@@ -193,6 +221,8 @@ it("can deploy and create, match, and finalize order", async () => {
   const completeOrderTxReceipt = await provider.Chain.receipt(completeOrderTx)
   expect(completeOrderTxReceipt.events[0].event).toBe('Order completed')
   expect(completeOrderTxReceipt.events[0].args[0]).toBe(secretHash)
+
+  expect((await getActiveOrders(provider, contract, "activeOrders")).length).toBe(0)
 
   await ensureMapValueIsNil(provider, contract, "getMatcher", secretHash)
   await ensureMapValueIsNil(provider, contract, "getOwner", secretHash)

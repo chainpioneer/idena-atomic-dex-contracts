@@ -5,6 +5,7 @@ import {
   Context,
   Host,
   PersistentMap,
+  KeyValue,
 } from "idena-sdk-as"
 
 export class AtomicDex {
@@ -12,7 +13,10 @@ export class AtomicDex {
   minAmount: Balance
   minOrderTTLInBlocks: u64
   fulfillPeriodInBlocks: u64
-  gapAfterFulfillment: u64
+
+  activeOrderCount : KeyValue<string, i32>
+
+  activeOrders: PersistentMap<i32, Bytes>
 
   requiredSecurityDepositAmount: Balance
 
@@ -23,6 +27,7 @@ export class AtomicDex {
   securityDepositInUse: PersistentMap<Address, bool>
 
   // order fields
+  orderIndex: PersistentMap<Bytes, i32>
   payoutAddresses: PersistentMap<Bytes, Address>
   orderOwners: PersistentMap<Bytes, Address>
   amountsDNA: PersistentMap<Bytes, Balance>
@@ -36,13 +41,17 @@ export class AtomicDex {
       minAmount: Balance,
       minOrderTTLInBlocks: u64,
       fulfillPeriodInBlocks: u64,
-      minBlocksAfterFulfillment: u64,
       protocolFund: Address,
   ) {
+
+    this.activeOrderCount = new KeyValue<string, i32>("activeOrderCount")
+    this.activeOrderCount.set(0)
+    this.activeOrders = PersistentMap.withStringPrefix<i32, Bytes>("activeOrders")
 
     // order data
     this.orderOwners = PersistentMap.withStringPrefix<Bytes, Address>("getOwner")
     this.payoutAddresses = PersistentMap.withStringPrefix<Bytes, Address>("getPayoutAddresses")
+    this.orderIndex = PersistentMap.withStringPrefix<Bytes, i32>("getOrderIndex")
     this.amountsDNA = PersistentMap.withStringPrefix<Bytes, Balance>("getAmountDNA")
     this.amountsXDAI = PersistentMap.withStringPrefix<Bytes, Balance>("getAmountXDAI")
     this.expirationBlocks = PersistentMap.withStringPrefix<Bytes, u64>("getExpirationBlock")
@@ -59,7 +68,6 @@ export class AtomicDex {
     this.minAmount = minAmount
     this.minOrderTTLInBlocks = minOrderTTLInBlocks
     this.fulfillPeriodInBlocks = fulfillPeriodInBlocks
-    this.gapAfterFulfillment = minBlocksAfterFulfillment
     this.protocolFund = protocolFund
     this.owner = Context.caller()
   }
@@ -80,6 +88,13 @@ export class AtomicDex {
     assert(Balance.ge(amountDNA, this.minAmount), "cannot create: amount should be >= minAmount")
 
     // STATE CHANGES
+
+
+    const index = this.activeOrderCount.get(0)
+    this.activeOrderCount.set(index + 1)
+    this.activeOrders.set(index, secretHash)
+
+    this.orderIndex.set(secretHash, index)
 
     this.orderOwners.set(secretHash, sender)
     this.payoutAddresses.set(secretHash, payoutAddress)
@@ -116,7 +131,7 @@ export class AtomicDex {
     }
 
     const matchExpirationBlock = Context.blockNumber() + this.fulfillPeriodInBlocks
-    assert(this.expirationBlocks.get(secretHash, 0) >= (matchExpirationBlock + this.gapAfterFulfillment) , "order expired")
+    assert(this.expirationBlocks.get(secretHash, 0) >= (matchExpirationBlock) , "order expired")
 
     // STATE CHANGES
 
@@ -134,11 +149,15 @@ export class AtomicDex {
 
     const expirationBlock = this.expirationBlocks.get(secretHash, 0)
     assert(expirationBlock != 0, "cannot cancel: order doesn't exist")
-    assert(Context.blockNumber() >= expirationBlock, "cannot cancel: not yet expired")
+
+    const matcher = this.matchers.get(secretHash, new Address(0))
+    assert(
+        (matcher != new Address(0) && Context.blockNumber() >= expirationBlock)
+        || (matcher == new Address(0) && Context.blockNumber() > expirationBlock - this.fulfillPeriodInBlocks)
+        , "cannot cancel: not yet expired")
 
     // STATE CHANGES
 
-    const matcher = this.matchers.get(secretHash, new Address(0))
     if (matcher != new Address(0)) { // order matched
       // penalize a matcher for allowing the expiration
       const securityDeposit = this.securityDeposits.get(matcher, Balance.Zero)
@@ -153,6 +172,18 @@ export class AtomicDex {
     const owner = this.orderOwners.get(secretHash, new Address(0))
     const amountDNA = this.amountsDNA.get(secretHash, Balance.Zero)
 
+    const index = this.orderIndex.get(secretHash, 0)
+    const lastIndex = this.activeOrderCount.get(0) - 1
+    this.activeOrderCount.set(lastIndex)
+    const lastOrderSecretHash = this.activeOrders.get(lastIndex, secretHash)
+    this.activeOrders.delete(lastIndex)
+
+    if (lastIndex !== index) {
+      this.activeOrders.set(index, lastOrderSecretHash)
+      this.orderIndex.set(lastOrderSecretHash, index)
+    }
+
+    this.orderIndex.delete(secretHash)
     this.orderOwners.delete(secretHash)
     this.payoutAddresses.delete(secretHash)
     this.amountsDNA.delete(secretHash)
@@ -179,6 +210,20 @@ export class AtomicDex {
 
     // STATE CHANGES
 
+    const index = this.orderIndex.get(secretHash, 0)
+    const lastIndex = this.activeOrderCount.get(0) - 1
+    this.activeOrderCount.set(lastIndex)
+
+    const lastOrderSecretHash = this.activeOrders.get(lastIndex, secretHash)
+
+    this.activeOrders.delete(lastIndex)
+
+    if (lastIndex !== index) {
+      this.activeOrders.set(index, lastOrderSecretHash)
+      this.orderIndex.set(lastOrderSecretHash, index)
+    }
+
+    this.orderIndex.delete(secretHash)
     this.orderOwners.delete(secretHash)
     this.amountsDNA.delete(secretHash)
     this.amountsXDAI.delete(secretHash)
